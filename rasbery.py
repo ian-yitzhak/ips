@@ -107,6 +107,6 @@ class SimpleParkingCamera:
             print("Camera stopped")
 
 if __name__ == "__main__":
-    server_url = "http://192.168.1.100:8000"  # Replace with your server IP
+    server_url = "http://192.168.100.5:8000"  # Updated with your IP address
     camera = SimpleParkingCamera(server_url)
     camera.start_monitoring(interval=30)
