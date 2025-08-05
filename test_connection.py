@@ -3,7 +3,7 @@ import json
 
 def test_server_connection():
     """Test if Django server is accessible"""
-    server_url = "http://192.168.100.5:8000"  # Replace with your server IP
+    server_url = "http://192.168.100.9:8000" 
     
     try:
         # Test basic connection
