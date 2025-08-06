@@ -16,8 +16,9 @@ def timestamp():
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 class SimpleParkingCamera:
-    def __init__(self, server_url):
+    def __init__(self, server_url, cam_index=0):
         self.server_url = server_url
+        self.cam_index = cam_index
         self.camera = None
         self.pwm = None
         self.setup_gate_servo()
@@ -25,7 +26,7 @@ class SimpleParkingCamera:
     def setup_camera(self):
         """Initialize camera"""
         try:
-            self.camera = Picamera2()
+            self.camera = Picamera2(self.cam_index)
             # Configure camera
             config = self.camera.create_still_configuration(
                 main={"size": (1920, 1080)},
@@ -35,9 +36,9 @@ class SimpleParkingCamera:
             self.camera.configure(config)
             self.camera.start()
             time.sleep(2)  # Let camera warm up
-            print(f"[{timestamp()}] Camera initialized successfully")
+            print(f"[{timestamp()}] Camera {self.cam_index} initialized successfully")
         except Exception as e:
-            print(f"[{timestamp()}] Camera setup failed: {e}")
+            print(f"[{timestamp()}] Camera {self.cam_index} setup failed: {e}")
     
     def setup_gate_servo(self):
         """Initialize servo motor for gate control"""
@@ -75,11 +76,11 @@ class SimpleParkingCamera:
         """Capture image from camera"""
         try:
             ts = timestamp()
-            filename = f"{MEDIA_DIR}/vehicle_cam0_{ts}.jpg"
+            filename = f"{MEDIA_DIR}/vehicle_cam{self.cam_index}_{ts}.jpg"
             
             # Take picture
             self.camera.capture_file(filename)
-            print(f"[{timestamp()}] Image captured: vehicle_cam0_{ts}.jpg")
+            print(f"[{timestamp()}] Image captured: vehicle_cam{self.cam_index}_{ts}.jpg")
             
             return filename
         except Exception as e:
@@ -134,7 +135,7 @@ class SimpleParkingCamera:
 
 def run_camera(camera_system, interval=30, duration=300):
     """Run camera monitoring for specified duration"""
-    print(f"[{timestamp()}] Starting Camera 0 monitoring for {duration}s")
+    print(f"[{timestamp()}] Starting Camera {camera_system.cam_index} monitoring for {duration}s")
     
     # Setup camera
     camera_system.setup_camera()
@@ -167,11 +168,11 @@ def main():
     print(f"[{timestamp()}] Parking Camera Script started.")
     
     server_url = "http://192.168.100.3:8000"
-    camera_system = SimpleParkingCamera(server_url)
+    camera_system = SimpleParkingCamera(server_url, cam_index=1)  # Use camera 1 like your example
     
-    print(f"[{timestamp()}] Starting Camera 0 for 300 seconds...")
+    print(f"[{timestamp()}] Starting Camera 1 for 300 seconds...")
     
-    # Create and start thread for camera 0
+    # Create and start thread for camera 1
     cam_1 = threading.Thread(target=run_camera, args=(camera_system, 30, 300))
     cam_1.start()
     cam_1.join()
