@@ -53,7 +53,7 @@ class SimpleParkingCamera:
         try:
             self.set_gate_angle(90)
             print("Gate Opened")
-            time.sleep(10)  # Keep gate open for 10 seconds
+            time.sleep(5)  # Keep gate open for 10 seconds
             self.set_gate_angle(0)
             print("Gate Closed")
         except Exception as e:
