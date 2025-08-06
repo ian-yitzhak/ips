@@ -1,4 +1,3 @@
-# raspberry_pi_camera.py
 import requests
 import base64
 import json
@@ -6,12 +5,14 @@ import time
 from picamera2 import Picamera2
 from datetime import datetime
 import os
+import RPi.GPIO as GPIO
 
 class SimpleParkingCamera:
     def __init__(self, server_url):
         self.server_url = server_url
         self.camera = Picamera2()
         self.setup_camera()
+        self.setup_gate_servo()
     
     def setup_camera(self):
         """Initialize camera"""
@@ -28,6 +29,34 @@ class SimpleParkingCamera:
             print("Camera initialized successfully")
         except Exception as e:
             print(f"Camera setup failed: {e}")
+    
+    def setup_gate_servo(self):
+        """Initialize servo motor for gate control"""
+        self.Servo_Pin = 6
+        self.PWM_FREQUENCY = 50
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(self.Servo_Pin, GPIO.OUT)
+        self.pwm = GPIO.PWM(self.Servo_Pin, self.PWM_FREQUENCY)
+        self.pwm.start(0)
+        print("Servo motor initialized")
+    
+    def set_gate_angle(self, angle):
+        """Set gate angle (0 = closed, 90 = open)"""
+        duty_cycle = 2 + (angle/18)
+        self.pwm.ChangeDutyCycle(duty_cycle)
+        time.sleep(0.1)
+        self.pwm.ChangeDutyCycle(0)
+    
+    def operate_gate(self):
+        """Open gate for 10 seconds then close it"""
+        try:
+            self.set_gate_angle(90)
+            print("Gate Opened")
+            time.sleep(10)  # Keep gate open for 10 seconds
+            self.set_gate_angle(0)
+            print("Gate Closed")
+        except Exception as e:
+            print(f"Error operating gate: {e}")
     
     def capture_image(self):
         """Capture image from camera"""
@@ -69,6 +98,9 @@ class SimpleParkingCamera:
                 
                 # Delete local file after successful upload
                 os.remove(image_path)
+                
+                # Open and close the gate after successful image processing
+                self.operate_gate()
                 return True
             else:
                 print(f"✗ Failed to send image: {response.text}")
@@ -104,9 +136,11 @@ class SimpleParkingCamera:
         except KeyboardInterrupt:
             print("\nStopping monitoring...")
             self.camera.stop()
-            print("Camera stopped")
+            self.pwm.stop()
+            GPIO.cleanup()
+            print("Camera and servo stopped")
 
 if __name__ == "__main__":
-    server_url = "http://192.168.100.5:8000"  # Updated with your IP address
+    server_url = "http://192.168.100.3:8000"  # Updated with your IP address
     camera = SimpleParkingCamera(server_url)
     camera.start_monitoring(interval=30)
