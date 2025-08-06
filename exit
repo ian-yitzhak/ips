@@ -1,4 +1,3 @@
-# exit_parking_system.py - Raspberry Pi Exit Camera System
 import requests
 import base64
 import json
@@ -9,18 +8,19 @@ import os
 import RPi.GPIO as GPIO
 import threading
 
-class ExitParkingSystem:
+class ExitParkingSystemWithOCR:
     def __init__(self, server_url):
         self.server_url = server_url
         self.camera = Picamera2()
         self.current_entry_id = None  # Store entry ID for confirmation
+        self.current_plate = None     # Store extracted plate number
         self.setup_camera()
         self.setup_servo()
     
     def setup_camera(self):
         """Initialize camera"""
         try:
-            # Configure camera
+            # Configure camera for better plate reading
             config = self.camera.create_still_configuration(
                 main={"size": (1920, 1080)},
                 lores={"size": (640, 480)},
@@ -29,12 +29,12 @@ class ExitParkingSystem:
             self.camera.configure(config)
             self.camera.start()
             time.sleep(2)  # Let camera warm up
-            print("📷 Camera initialized successfully")
+            print("📷 EXIT CAMERA: Initialized successfully")
         except Exception as e:
             print(f"❌ Camera setup failed: {e}")
     
     def setup_servo(self):
-        """Initialize servo motor for gate control"""
+        """Initialize servo motor for exit gate control"""
         try:
             self.servo_pin = 6
             self.pwm_frequency = 50
@@ -45,7 +45,7 @@ class ExitParkingSystem:
             
             # Initialize gate to closed position
             self.set_angle(0)
-            print("🚪 Exit gate initialized - Gate Closed")
+            print("🚪 EXIT GATE: Initialized - Gate Closed")
         except Exception as e:
             print(f"❌ Servo setup failed: {e}")
     
@@ -62,185 +62,264 @@ class ExitParkingSystem:
     def open_gate(self):
         """Open the exit gate"""
         self.set_angle(90)
-        print("🔓 EXIT GATE: Opened ✓")
+        print("🔓 EXIT GATE: OPENED ✅")
     
     def close_gate(self):
         """Close the exit gate"""
         self.set_angle(0)
-        print("🔒 EXIT GATE: Closed ✓")
+        print("🔒 EXIT GATE: CLOSED ✅")
     
-    def exit_gate_cycle(self, entry_id):
-        """Open gate, wait 10 seconds, close gate, then confirm exit after 5 more seconds"""
+    def exit_gate_cycle_with_confirmation(self, entry_id, plate_number):
+        """
+        Complete exit cycle: Open gate → Wait 10 seconds → Close gate → Wait 5 seconds → Confirm exit
+        """
         def gate_operation():
             try:
-                print("🔓 EXIT GATE: Opening for paid vehicle...")
-                self.open_gate()
-                print("⏱️  EXIT GATE: Vehicle has 10 seconds to exit...")
-                time.sleep(10)  # Keep gate open for 10 seconds
+                print(f"🚗 STARTING EXIT SEQUENCE FOR: {plate_number}")
+                print("=" * 50)
                 
-                print("🔒 EXIT GATE: Closing...")
+                # Step 1: Open gate
+                print("🔓 STEP 1: Opening exit gate...")
+                self.open_gate()
+                
+                # Step 2: Keep gate open for 10 seconds
+                print("⏱️  STEP 2: Gate open - Vehicle has 10 seconds to exit...")
+                for i in range(10, 0, -1):
+                    print(f"   ⏳ {i} seconds remaining...")
+                    time.sleep(1)
+                
+                # Step 3: Close gate
+                print("🔒 STEP 3: Closing exit gate...")
                 self.close_gate()
                 
-                print("⏱️  Waiting 5 seconds before confirming exit...")
-                time.sleep(5)  # Wait 5 seconds after gate closes
+                # Step 4: Wait 5 seconds before confirming exit
+                print("⏱️  STEP 4: Waiting 5 seconds before confirming exit...")
+                for i in range(5, 0, -1):
+                    print(f"   ⏳ {i} seconds until exit confirmation...")
+                    time.sleep(1)
                 
-                # Confirm exit to server
-                self.confirm_vehicle_exit(entry_id)
+                # Step 5: Confirm exit to server
+                print("📡 STEP 5: Confirming exit with server...")
+                success = self.confirm_vehicle_exit(entry_id, plate_number)
                 
-                print("✅ EXIT GATE: Cycle completed and exit confirmed")
+                if success:
+                    print(f"✅ EXIT COMPLETE: {plate_number} has successfully exited!")
+                    print("🎉 Parking session closed.")
+                else:
+                    print(f"⚠️  EXIT WARNING: Could not confirm exit for {plate_number}")
+                    print("   (Vehicle may have exited but server confirmation failed)")
+                
+                print("=" * 50)
+                
             except Exception as e:
-                print(f"❌ EXIT GATE ERROR: {e}")
-                # Try to close gate if there's an error
+                print(f"❌ EXIT SEQUENCE ERROR: {e}")
+                # Emergency: Ensure gate is closed
                 try:
+                    print("🚨 Emergency: Ensuring gate is closed...")
                     self.close_gate()
                 except:
                     pass
         
-        # Run gate operation in separate thread to avoid blocking
+        # Run complete exit sequence in separate thread
         gate_thread = threading.Thread(target=gate_operation)
         gate_thread.daemon = True
         gate_thread.start()
         return gate_thread
     
     def capture_image(self):
-        """Capture image from camera"""
+        """Capture high-quality image for plate recognition"""
         try:
-            # Capture image
+            # Capture image with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"exit_{timestamp}.jpg"
             
             # Take picture
             self.camera.capture_file(filename)
-            print(f"📷 Exit image captured: {filename}")
+            print(f"📷 EXIT IMAGE: Captured {filename}")
             
             return filename
         except Exception as e:
             print(f"❌ Failed to capture exit image: {e}")
             return None
     
-    def process_exit_request(self, image_path, plate_number="", color="unknown"):
-        """Send exit request to Django server"""
+    def process_exit_with_ocr(self, image_path, color="unknown"):
+        """
+        Send image to server for OCR processing and payment verification
+        """
         try:
+            print("📡 PROCESSING: Sending image to server for plate extraction...")
+            
             # Read and encode image
             with open(image_path, 'rb') as image_file:
                 image_data = base64.b64encode(image_file.read()).decode('utf-8')
             
-            # Prepare data
+            # Prepare data for server
             data = {
                 'image': image_data,
-                'plate_number': plate_number,
                 'color': color,
                 'timestamp': datetime.now().isoformat()
             }
             
-            # Send to server
+            # Send to server for OCR and payment verification
             url = f"{self.server_url}/api/process-exit/"
-            response = requests.post(url, json=data, timeout=30)
+            print(f"🔍 OCR: Extracting plate number...")
             
-            # Delete local file after sending
+            response = requests.post(url, json=data, timeout=45)  # Increased timeout for OCR
+            
+            # Clean up local file
             os.remove(image_path)
+            print(f"🗑️  Cleaned up local image file")
             
+            # Process server response
             if response.status_code == 200:
+                # SUCCESS - Payment verified, gate should open
                 result = response.json()
-                print(f"✅ EXIT APPROVED: {result['message']}")
-                print(f"💰 Parking Fee: Ksh {result['parking_fee']}")
-                print(f"⏱️  Duration: {result['duration']}")
+                extracted_plate = result.get('plate_number', 'Unknown')
+                confidence = result.get('confidence', 0)
                 
-                # Store entry ID for confirmation later
+                print("✅ SUCCESS - EXIT AUTHORIZED!")
+                print(f"🔤 PLATE: {extracted_plate} (OCR Confidence: {confidence}%)")
+                print(f"💰 FEE PAID: Ksh {result['parking_fee']}")
+                print(f"⏱️  DURATION: {result['duration']}")
+                
+                # Store details for confirmation
                 self.current_entry_id = result['entry_id']
+                self.current_plate = extracted_plate
                 
                 return True, result
                 
             elif response.status_code == 403:
-                # Payment required
+                # PAYMENT REQUIRED
                 result = response.json()
-                print(f"❌ EXIT DENIED: {result['error']}")
-                if 'parking_fee' in result:
-                    print(f"💰 Payment Required: Ksh {result['parking_fee']}")
-                    print(f"⏱️  Duration: {result['duration']}")
-                    print(f"🚗 Vehicle Type: {result.get('vehicle_type', 'unknown')}")
+                extracted_plate = result.get('plate_number', 'Unknown')
+                confidence = result.get('confidence', 0)
+                
+                print("❌ EXIT DENIED - PAYMENT REQUIRED!")
+                print(f"🔤 PLATE: {extracted_plate} (OCR Confidence: {confidence}%)")
+                print(f"💳 PAYMENT DUE: Ksh {result.get('parking_fee', 'Unknown')}")
+                print(f"⏱️  DURATION: {result.get('duration', 'Unknown')}")
+                print(f"🚗 TYPE: {result.get('vehicle_type', 'Unknown')}")
+                print("💡 Please complete payment before attempting to exit")
                 
                 return False, result
                 
             elif response.status_code == 404:
+                # NO ACTIVE ENTRY FOUND
                 result = response.json()
-                print(f"❌ EXIT DENIED: {result['error']}")
+                extracted_plate = result.get('extracted_plate', 'Unknown')
+                confidence = result.get('confidence', 0)
+                
+                print("❌ EXIT DENIED - NO ACTIVE ENTRY!")
+                print(f"🔤 EXTRACTED PLATE: {extracted_plate} (OCR Confidence: {confidence}%)")
+                print("📝 No active parking session found for this plate")
+                print("💡 Vehicle may have already exited or plate recognition failed")
+                
+                return False, result
+                
+            elif response.status_code == 400:
+                # OCR FAILED
+                result = response.json()
+                print("❌ EXIT DENIED - PLATE RECOGNITION FAILED!")
+                print("🔤 Could not extract plate number from image")
+                print("💡 Ensure license plate is clearly visible and well-lit")
+                
                 return False, result
                 
             else:
-                print(f"❌ Server error: {response.text}")
+                # SERVER ERROR
+                print(f"❌ SERVER ERROR: {response.status_code}")
+                print(f"Response: {response.text}")
                 return False, {"error": "Server error"}
                 
         except Exception as e:
-            print(f"❌ Error processing exit request: {e}")
+            print(f"❌ Error processing exit: {e}")
             return False, {"error": str(e)}
     
-    def confirm_vehicle_exit(self, entry_id):
-        """Confirm to server that vehicle has exited"""
+    def confirm_vehicle_exit(self, entry_id, plate_number):
+        """Confirm to server that vehicle has completed exit"""
         try:
             data = {
-                'entry_id': entry_id
+                'entry_id': entry_id,
+                'plate_number': plate_number
             }
             
             url = f"{self.server_url}/api/confirm-exit/"
-            response = requests.post(url, json=data, timeout=10)
+            response = requests.post(url, json=data, timeout=15)
             
             if response.status_code == 200:
                 result = response.json()
-                print(f"✅ EXIT CONFIRMED: {result['message']}")
+                print(f"✅ SERVER CONFIRMED: {result['message']}")
                 return True
             else:
-                print(f"❌ Failed to confirm exit: {response.text}")
+                print(f"❌ Confirmation failed: {response.text}")
                 return False
                 
         except Exception as e:
             print(f"❌ Error confirming exit: {e}")
             return False
     
-    def start_exit_monitoring(self, interval=30):
-        """Start continuous exit monitoring"""
-        print("🚗 Starting EXIT monitoring system...")
-        print(f"📷 Capturing images every {interval} seconds")
-        print("💳 Gate will ONLY open if payment is completed")
-        print("⏱️  Gate opens for 10 seconds, then confirms exit after 5 more seconds")
+    def start_exit_monitoring(self, interval=20):
+        """Start continuous exit monitoring with OCR"""
+        print("🚗 STARTING EXIT MONITORING SYSTEM")
+        print("=" * 60)
+        print("📷 System will capture images and extract plate numbers")
+        print("🔍 OCR processing will identify vehicles")
+        print("💳 Payment status will be verified from database")
+        print("🚪 Gate opens ONLY for vehicles with completed payments")
+        print("⏱️  Exit sequence: Open 10s → Close → Wait 5s → Confirm")
+        print(f"🔄 Scanning every {interval} seconds")
         print("Press Ctrl+C to stop")
+        print("=" * 60)
         
         try:
+            scan_count = 0
             while True:
-                print("\n--- 🚪 EXIT: Starting new scan ---")
+                scan_count += 1
+                print(f"\n🔍 SCAN #{scan_count} - {datetime.now().strftime('%H:%M:%S')}")
+                print("-" * 40)
                 
-                # Capture image
+                # Step 1: Capture image
+                print("📷 Capturing exit image...")
                 image_path = self.capture_image()
                 
                 if image_path:
-                    # Process exit request
-                    print("📡 Checking payment status with server...")
-                    success, result = self.process_exit_request(image_path)
+                    # Step 2: Process with OCR and payment verification
+                    success, result = self.process_exit_with_ocr(image_path)
                     
                     if success:
-                        print("✅ PAYMENT VERIFIED - Opening exit gate!")
-                        # Open gate for 10 seconds, then confirm exit
-                        self.exit_gate_cycle(self.current_entry_id)
+                        # Step 3: Payment verified - Start exit sequence
+                        print("🎯 PAYMENT VERIFIED - INITIATING EXIT SEQUENCE")
+                        self.exit_gate_cycle_with_confirmation(
+                            self.current_entry_id, 
+                            self.current_plate
+                        )
+                        
+                        # Give extra time for the exit sequence to complete
+                        print(f"⏳ Exit sequence running... Next scan in {interval + 20} seconds")
+                        time.sleep(interval + 20)
                     else:
+                        # Payment not verified or other error
                         error_msg = result.get('error', 'Unknown error')
-                        print(f"❌ EXIT BLOCKED: {error_msg}")
-                        if 'parking_fee' in result:
-                            print("💡 Vehicle must complete payment before exiting")
+                        print(f"🚫 GATE REMAINS CLOSED: {error_msg}")
+                        
+                        print(f"⏳ Next scan in {interval} seconds")
+                        time.sleep(interval)
                 else:
-                    print("❌ Could not capture exit image")
-                
-                print(f"⏳ Waiting {interval} seconds before next scan...")
-                # Wait before next capture
-                time.sleep(interval)
+                    print("❌ IMAGE CAPTURE FAILED")
+                    print(f"⏳ Next scan in {interval} seconds")
+                    time.sleep(interval)
                 
         except KeyboardInterrupt:
-            print("\n🛑 Stopping exit monitoring...")
+            print("\n🛑 STOPPING EXIT MONITORING SYSTEM...")
             self.cleanup()
     
     def cleanup(self):
-        """Clean up resources"""
+        """Clean up all resources"""
         try:
-            # Close gate before shutting down
+            print("🔧 CLEANUP: Shutting down exit system...")
+            
+            # Ensure gate is closed
+            print("🚪 Ensuring exit gate is closed...")
             self.close_gate()
             time.sleep(1)
             
@@ -252,18 +331,24 @@ class ExitParkingSystem:
             self.pwm.stop()
             GPIO.cleanup()
             print("🔌 GPIO cleaned up")
+            print("✅ Exit system shutdown complete")
+            
         except Exception as e:
             print(f"❌ Error during cleanup: {e}")
 
 if __name__ == "__main__":
-    server_url = "http://192.168.100.3:8000"  # Your server IP
+    # Configuration
+    server_url = "http://192.168.100.3:8000"  # Your Django server
+    scan_interval = 20  # Scan every 20 seconds
     
     try:
-        exit_system = ExitParkingSystem(server_url)
-        exit_system.start_exit_monitoring(interval=30)
+        print("🚀 INITIALIZING EXIT PARKING SYSTEM...")
+        exit_system = ExitParkingSystemWithOCR(server_url)
+        exit_system.start_exit_monitoring(interval=scan_interval)
+        
     except Exception as e:
-        print(f"❌ System error: {e}")
-        # Ensure cleanup even if there's an error
+        print(f"❌ SYSTEM STARTUP ERROR: {e}")
+        # Emergency cleanup
         try:
             GPIO.cleanup()
         except:
